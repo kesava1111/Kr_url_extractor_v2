@@ -1,11 +1,12 @@
 # ============================================================
-# Kr Firebase Extractor - Backend v4.2
-# Firebase Active/Inactive + Response stats
+# Kr Firebase Extractor - Backend v4.3
+# Base64 support + Firebase status
 # ============================================================
 
 import re
 import os
 import time
+import base64
 import requests
 from flask import Flask, request, jsonify, send_from_directory
 
@@ -22,7 +23,7 @@ HEADERS = {
 
 
 # ============================================================
-# HOME - index.html serve cheyyi
+# HOME
 # ============================================================
 @app.route("/")
 def home():
@@ -31,7 +32,41 @@ def home():
             return send_from_directory(".", name)
         except Exception:
             continue
-    return "index.html file dorakaledu. Same folder lo pettu."
+    return "index.html file dorakaledu."
+
+
+# ============================================================
+# BASE64 DECODE
+# ============================================================
+def try_base64_decode(text):
+    """Base64 strings ni decode chesi, vatilo Firebase URLs vethuku."""
+    found = set()
+    # Base64 pattern: alphanumeric + / + = , length > 20
+    b64_candidates = re.findall(r'[A-Za-z0-9+/=]{20,}', text)
+
+    for b64 in b64_candidates:
+        try:
+            # Padding add cheyyi
+            padded = b64 + "=" * (-len(b64) % 4)
+            decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+
+            # Decoded text lo Firebase URLs vethuku
+            for m in re.findall(
+                r'https?://[a-zA-Z0-9\-_]+\.firebaseio\.com', decoded
+            ):
+                found.add(m)
+            for m in re.findall(
+                r'https?://[a-zA-Z0-9\-_]+\.firebasedatabase\.app', decoded
+            ):
+                found.add(m)
+            for m in re.findall(
+                r'https?://[a-zA-Z0-9\-_]+\.firebaseapp\.com', decoded
+            ):
+                found.add(m)
+        except Exception:
+            continue
+
+    return found
 
 
 # ============================================================
@@ -41,6 +76,7 @@ def extract_firebase(html):
     firebase_urls = set()
     config = {}
 
+    # 1) Direct patterns (plain text)
     patterns_url = [
         r'https?://[a-zA-Z0-9\-_]+\.firebaseio\.com',
         r'https?://[a-zA-Z0-9\-_]+\.firebaseapp\.com',
@@ -52,11 +88,11 @@ def extract_firebase(html):
         for m in re.findall(pat, html):
             firebase_urls.add(m)
 
+    # 2) firebaseConfig keys
     config_keys = [
         "apiKey", "authDomain", "databaseURL", "projectId",
         "storageBucket", "messagingSenderId", "appId", "measurementId",
     ]
-
     for key in config_keys:
         pattern = r'"' + key + r'"\s*:\s*"([^"]+)"'
         m = re.search(pattern, html)
@@ -74,11 +110,33 @@ def extract_firebase(html):
             if m:
                 config[key] = m.group(1)
 
+    # 3) Base64 decoded URLs (NEW)
+    b64_urls = try_base64_decode(html)
+    firebase_urls.update(b64_urls)
+
+    # 4) URL query parameter lo base64 (NEW)
+    # example: ?m=W3sidXJs...
+    query_match = re.search(r'[?&]m=([A-Za-z0-9+/=]+)', html)
+    if query_match:
+        try:
+            padded = query_match.group(1) + "=" * (-len(query_match.group(1)) % 4)
+            decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+            for m in re.findall(
+                r'https?://[a-zA-Z0-9\-_]+\.firebaseio\.com', decoded
+            ):
+                firebase_urls.add(m)
+            for m in re.findall(
+                r'https?://[a-zA-Z0-9\-_]+\.firebasedatabase\.app', decoded
+            ):
+                firebase_urls.add(m)
+        except Exception:
+            pass
+
     return sorted(firebase_urls), config
 
 
 # ============================================================
-# CHECK FIREBASE URL STATUS
+# CHECK FIREBASE STATUS
 # ============================================================
 def check_firebase_status(url):
     result = {
@@ -145,7 +203,7 @@ def check_firebase_status(url):
 
 
 # ============================================================
-# API - /extract?url=...
+# API
 # ============================================================
 @app.route("/extract")
 def extract():
@@ -173,7 +231,8 @@ def extract():
             "statuses": {}
         }), 200
 
-    firebase_urls, config = extract_firebase(res.text)
+    # Full URL text + fetched HTML rendu pass cheyyi
+    firebase_urls, config = extract_firebase(res.text + " " + url)
 
     statuses = {}
     for fb_url in firebase_urls:
@@ -188,7 +247,7 @@ def extract():
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 @app.route("/health")
 def health():
@@ -201,7 +260,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print("=" * 50)
-    print(f" Kr Firebase Extractor running on port {port}")
-    print(f" Open: http://127.0.0.1:{port}")
+    print(f"🚀 Kr Firebase Extractor running on port {port}")
+    print(f"🌐 Open: http://127.0.0.1:{port}")
     print("=" * 50)
     app.run(host="0.0.0.0", port=port, debug=False)
